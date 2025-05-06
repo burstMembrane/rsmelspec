@@ -1,0 +1,23 @@
+[package]
+name = "rustmelspec"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.98"
+clap = { version = "4.5.37", features = ["derive"] }
+clio = { version = "0.3.5", features = ["clap-parse"] }
+image = "0.24.7"
+mel_spec = "0.3.3"
+mel_spec_audio = "0.2.2"
+ndarray = "0.16.1"
+soundkit = "0.12.1"
+itertools = "0.12.0"
+num = "0.4.3"
+wavers = { version = "1.5.1", features = ["ndarray"] }
+colorgrad = "0.7.1"
+
+[dev-dependencies]
+clio = { version = "0.3.5", features = ["clap-parse"] }
+num = "0.4.3"
+wavers = { version = "1.5.1", features = ["ndarray"] }
