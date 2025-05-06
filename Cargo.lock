@@ -962,6 +962,7 @@ dependencies = [
  "mel_spec_audio",
  "ndarray",
  "num",
+ "rayon",
  "soundkit",
  "wavers",
 ]

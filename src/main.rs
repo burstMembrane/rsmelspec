@@ -1,5 +1,6 @@
 use clap::Parser;
 use clio::Input;
+use rayon::prelude::*;
 use wavers::{read, Wav};
 mod colors;
 mod mel;
@@ -37,6 +38,9 @@ struct Cli {
 
     #[clap(short, long, default_value = "output.png")]
     output: String,
+
+    #[clap(long, default_value = "10.0")]
+    chunk_duration: f32,
 }
 
 fn main() {
@@ -68,7 +72,18 @@ fn main() {
     // read the audio data into a Vec<f32>
     let buffer: Vec<f32> = wav.read().unwrap().to_vec();
 
-    let mel_spec = mel::mel_spectrogram_db(mel_config, buffer);
-    let image = mel::plot_mel_spec(mel_spec, colors::Colormap::Inferno);
+    // Determine chunk size in samples
+    let chunk_samples = (args.chunk_duration * sampling_rate as f32) as usize;
+    // Split buffer into chunks
+    let chunks: Vec<&[f32]> = buffer.chunks(chunk_samples).collect();
+    // Parallel compute mel specs for each chunk
+    let mel_specs: Vec<Vec<Vec<f32>>> = chunks
+        .into_par_iter()
+        .map(|chunk| mel::mel_spectrogram_db(mel_config.clone(), chunk.to_vec()))
+        .collect();
+    // Stitch the time frames back together
+    let full_spec: Vec<Vec<f32>> = mel_specs.into_iter().flatten().collect();
+    // Plot the full spectrogram
+    let image = mel::plot_mel_spec(full_spec, colors::Colormap::Magma, 1920, 256);
     image.save(output_path).unwrap();
 }

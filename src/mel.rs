@@ -1,6 +1,8 @@
 use image::ImageBuffer;
 use image::Rgb;
 use num::complex::Complex;
+use rayon::prelude::*;
+use std::time::Instant;
 
 use crate::colors;
 pub struct SpectrogramConfig {
@@ -16,6 +18,13 @@ impl SpectrogramConfig {
         Self { onesided }
     }
 }
+impl Clone for SpectrogramConfig {
+    fn clone(&self) -> Self {
+        Self {
+            onesided: self.onesided,
+        }
+    }
+}
 pub struct MelConfig {
     sample_rate: f32,
     n_fft: usize,
@@ -26,6 +35,21 @@ pub struct MelConfig {
     n_mels: usize,
     top_db: f32,
     spectrogram_config: SpectrogramConfig,
+}
+impl Clone for MelConfig {
+    fn clone(&self) -> Self {
+        Self {
+            sample_rate: self.sample_rate,
+            n_fft: self.n_fft,
+            win_length: self.win_length,
+            hop_length: self.hop_length,
+            f_min: self.f_min,
+            f_max: self.f_max,
+            n_mels: self.n_mels,
+            top_db: self.top_db,
+            spectrogram_config: self.spectrogram_config.clone(),
+        }
+    }
 }
 
 impl MelConfig {
@@ -54,13 +78,16 @@ impl MelConfig {
     }
 }
 pub fn mel_spectrogram_db(config: MelConfig, waveform: Vec<f32>) -> Vec<Vec<f32>> {
+    let start = Instant::now();
     let top_db = config.top_db;
     let mel_spec: Vec<Vec<f32>> = mel_spectrogram(config, waveform);
     let result: Vec<Vec<f32>> = amplitude_to_db(mel_spec, top_db);
+    println!("mel_spectrogram_db elapsed: {:?}", start.elapsed());
     result
 }
 
 fn mel_spectrogram(config: MelConfig, waveform: Vec<f32>) -> Vec<Vec<f32>> {
+    let start = Instant::now();
     let spectrogram = spectrogram(
         waveform,
         config.n_fft,
@@ -77,8 +104,8 @@ fn mel_spectrogram(config: MelConfig, waveform: Vec<f32>) -> Vec<Vec<f32>> {
         config.sample_rate,
     );
 
-    let mel_spec = spectrogram
-        .iter()
+    let mel_spec: Vec<Vec<f32>> = spectrogram
+        .into_par_iter()
         .map(|spec_row| {
             (0..config.n_mels)
                 .map(|j| {
@@ -92,6 +119,7 @@ fn mel_spectrogram(config: MelConfig, waveform: Vec<f32>) -> Vec<Vec<f32>> {
         })
         .collect();
 
+    println!("mel_spectrogram time: {:?}", start.elapsed());
     mel_spec
 }
 
@@ -102,6 +130,7 @@ fn spectrogram(
     hop_length: usize,
     onesided: bool,
 ) -> Vec<Vec<f32>> {
+    let start = Instant::now();
     println!("n_fft: {}", n_fft);
     println!("win_length: {}", win_length);
     println!("hop_length: {}", hop_length);
@@ -116,26 +145,39 @@ fn spectrogram(
         .chain(vec![0.0; pad_size])
         .collect();
 
-    let mut spectrogram = Vec::new();
-    for i in (0..padded_waveform.len() - win_length - pad_size).step_by(hop_length) {
-        let window = &padded_waveform[i..i + win_length];
-        let windowed_input: Vec<f32> = window
-            .iter()
-            .zip(hann_window(win_length).iter())
-            .map(|(a, b)| a * b)
-            .collect();
-        let fft_output: Vec<Complex<f32>> = fft(windowed_input, n_fft).into_iter().collect();
-        let magnitude_spectrum: Vec<f32> = fft_output.iter().map(|x| x.norm()).collect();
-        spectrogram.push(magnitude_spectrum);
-    }
+    let window_fn = hann_window(win_length);
+    let indices: Vec<usize> = (0..padded_waveform.len() - win_length - pad_size)
+        .step_by(hop_length)
+        .collect();
+
+    let full_spec: Vec<Vec<f32>> = indices
+        .into_par_iter()
+        .map(|i| {
+            // window + FFT + magnitude
+            let mut windowed_input = Vec::with_capacity(win_length);
+            for (a, w) in padded_waveform[i..i + win_length]
+                .iter()
+                .zip(window_fn.iter())
+            {
+                windowed_input.push(a * w);
+            }
+            fft(windowed_input, n_fft)
+                .into_iter()
+                .map(|c| c.norm())
+                .collect()
+        })
+        .collect();
 
     if onesided {
-        spectrogram
+        let result = full_spec
             .iter()
             .map(|row| row.iter().take(n_fft / 2 + 1).cloned().collect())
-            .collect()
+            .collect();
+        println!("spectrogram time: {:?}", start.elapsed());
+        result
     } else {
-        spectrogram
+        println!("spectrogram time: {:?}", start.elapsed());
+        full_spec
     }
 }
 
@@ -276,7 +318,10 @@ fn mel_to_hz(mel: f32) -> f32 {
 pub fn plot_mel_spec(
     mel_spec: Vec<Vec<f32>>,
     cmap: colors::Colormap,
+    width: usize,
+    height: usize,
 ) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
+    let start = Instant::now();
     let time_steps = mel_spec.len(); // X-axis
     let mel_bands = mel_spec[0].len(); // Y-axis
 
@@ -303,31 +348,52 @@ pub fn plot_mel_spec(
             image.put_pixel(t as u32, (mel_bands - 1 - m) as u32, Rgb(color));
         }
     }
+    println!("original width: {}", image.width());
+    println!("original height: {}", image.height());
+    // resize the image to the given width and height
+    image = image::imageops::resize(
+        &image,
+        width as u32,
+        height as u32,
+        image::imageops::FilterType::CatmullRom,
+    );
 
-    println!("image width: {}", image.width());
-    println!("image height: {}", image.height());
+    println!("resized width: {}", image.width());
+    println!("resized height: {}", image.height());
 
+    println!("plot_mel_spec elapsed: {:?}", start.elapsed());
     image
 }
 
 fn amplitude_to_db(amplitudes: Vec<Vec<f32>>, top_db: f32) -> Vec<Vec<f32>> {
+    use rayon::prelude::*;
+    use std::time::Instant;
+    let start = Instant::now();
+    // Stage 1: power -> dB conversion (parallel)
     let dbs: Vec<Vec<f32>> = amplitudes
-        .iter()
+        .into_par_iter()
         .map(|row| {
-            row.iter()
-                .map(|&amp| 20.0 * amp.max(1e-10).log10())
+            row.into_iter()
+                .map(|amp| 20.0 * amp.max(1e-10).log10())
                 .collect()
         })
         .collect();
 
+    // Compute global max (serial, since flattening and max is fast)
     let max_db = dbs
         .iter()
-        .map(|row| row.iter().cloned().fold(f32::NEG_INFINITY, f32::max))
+        .flat_map(|row| row.iter())
+        .cloned()
         .fold(f32::NEG_INFINITY, f32::max);
 
-    dbs.iter()
-        .map(|row| row.iter().map(|&amp| amp.max(max_db - top_db)).collect())
-        .collect()
+    // Stage 2: apply top_db clipping (parallel)
+    let clipped: Vec<Vec<f32>> = dbs
+        .into_par_iter()
+        .map(|row| row.into_iter().map(|db| db.max(max_db - top_db)).collect())
+        .collect();
+
+    println!("amplitude_to_db elapsed: {:?}", start.elapsed());
+    clipped
 }
 
 fn _assert_complex_eq(left: Complex<f32>, right: Complex<f32>) {
