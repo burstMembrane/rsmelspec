@@ -1,3 +1,5 @@
+use rubato::{FftFixedInOut, Resampler};
+
 pub fn split(
     audio: &[f32],
     segment_length_secs: f32,
@@ -66,4 +68,59 @@ pub fn merge(
         audio.truncate(audio.len() - padding);
     }
     audio
+}
+
+/// Resamples a mono audio buffer from `fs_in` to `fs_out` using FFT-based fixed-in/out resampling.
+pub fn resample_audio(input: &[f32], fs_in: usize, fs_out: usize) -> Vec<f32> {
+    // Choose a power-of-two chunk size for FFT
+    let nbr_frames_in = 1024;
+    // Build the resampler: (in_rate, out_rate, chunk_size, channels)
+    let mut resampler = FftFixedInOut::<f32>::new(fs_in, fs_out, nbr_frames_in, 1)
+        .expect("Failed to create FFT resampler");
+    // How many frames the filter delays
+    let delay = resampler.output_delay();
+    // Compute exact target length
+    let new_length = ((input.len() as f64) * (fs_out as f64) / (fs_in as f64)).round() as usize;
+
+    let mut output: Vec<f32> = Vec::with_capacity(new_length + delay);
+    let mut in_buf = Vec::with_capacity(nbr_frames_in);
+    let mut pos = 0;
+
+    // Process all full-sized chunks
+    while pos + nbr_frames_in <= input.len() {
+        in_buf.clear();
+        in_buf.extend_from_slice(&input[pos..pos + nbr_frames_in]);
+        let processed = resampler
+            .process(&[in_buf.clone()], None)
+            .expect("Resampling failed");
+        output.extend_from_slice(&processed[0]);
+        pos += nbr_frames_in;
+    }
+
+    // Process any remaining tail frames
+    if pos < input.len() {
+        in_buf.clear();
+        in_buf.extend_from_slice(&input[pos..]);
+        let processed = resampler
+            .process_partial(Some(&[in_buf.clone()]), None)
+            .expect("Resampling failed");
+        output.extend_from_slice(&processed[0]);
+    }
+
+    // Flush internal filter delay
+    while output.len() < new_length + delay {
+        let tail = resampler
+            .process_partial(None::<&[Vec<f32>]>, None)
+            .expect("Resampling failed");
+        output.extend_from_slice(&tail[0]);
+    }
+
+    // Drop the initial delay and truncate to the exact length
+    let mut final_out = if output.len() > delay {
+        output.split_off(delay)
+    } else {
+        Vec::new()
+    };
+    final_out.truncate(new_length);
+    final_out
 }

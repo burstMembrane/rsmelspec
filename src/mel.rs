@@ -301,6 +301,7 @@ pub fn plot_mel_spec(
     let time_steps = mel_spec.len();
     let mel_bands = mel_spec[0].len();
 
+    // Find min and max values for normalization
     let flat_vals: Vec<f32> = mel_spec
         .iter()
         .flat_map(|row| row.iter().cloned())
@@ -311,17 +312,47 @@ pub fn plot_mel_spec(
     let color_map = colors::precompute_colormap(&cmap);
 
     let mut image = ImageBuffer::new(width_px, height_px);
+
+    // Use bilinear interpolation to avoid blocky artifacts
     for px in 0..width_px {
-        let frame_idx = (px as usize * time_steps) / (width_px as usize);
-        if frame_idx >= time_steps {
-            eprintln!("Frame index {} out of bounds", frame_idx);
-            continue;
-        }
+        // Convert pixel to time position (as a float for interpolation)
+        let time_pos = (px as f32) * (time_steps as f32 - 1.0) / (width_px as f32 - 1.0);
+        let time_idx = time_pos.floor() as usize;
+        let time_frac = time_pos - time_idx as f32;
+
+        // Handle edge case
+        let time_idx_next = if time_idx >= time_steps - 1 {
+            time_steps - 1
+        } else {
+            time_idx + 1
+        };
 
         for py in 0..height_px {
-            let mel_idx = ((height_px - 1 - py) as usize * mel_bands) / (height_px as usize);
-            let val = mel_spec[frame_idx][mel_idx];
+            // Convert pixel to mel band position (as a float for interpolation)
+            // Note the reversed y-axis (height_px - 1 - py)
+            let mel_pos =
+                ((height_px - 1 - py) as f32) * (mel_bands as f32 - 1.0) / (height_px as f32 - 1.0);
+            let mel_idx = mel_pos.floor() as usize;
+            let mel_frac = mel_pos - mel_idx as f32;
 
+            // Handle edge case
+            let mel_idx_next = if mel_idx >= mel_bands - 1 {
+                mel_bands - 1
+            } else {
+                mel_idx + 1
+            };
+
+            // Bilinear interpolation between four nearest points
+            let val_tl = mel_spec[time_idx][mel_idx];
+            let val_tr = mel_spec[time_idx_next][mel_idx];
+            let val_bl = mel_spec[time_idx][mel_idx_next];
+            let val_br = mel_spec[time_idx_next][mel_idx_next];
+
+            let val_top = val_tl * (1.0 - time_frac) + val_tr * time_frac;
+            let val_bottom = val_bl * (1.0 - time_frac) + val_br * time_frac;
+            let val = val_top * (1.0 - mel_frac) + val_bottom * mel_frac;
+
+            // Convert to color
             let norm = (val - smin) / (smax - smin + f32::EPSILON);
             let idx = (norm * 255.0).round().clamp(0.0, 255.0) as usize;
             let color = color_map[idx];
@@ -329,8 +360,6 @@ pub fn plot_mel_spec(
         }
     }
 
-    println!("image width: {}", image.width());
-    println!("image height: {}", image.height());
     image
 }
 

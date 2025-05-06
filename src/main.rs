@@ -1,4 +1,5 @@
 use crate::colors::Colormap;
+use audio::resample_audio;
 use audio::split;
 use clap::Parser;
 use clio::Input;
@@ -104,12 +105,21 @@ fn main() {
         .cloned()
         .map(|x| x / max_val)
         .collect();
+    // Resample if WAV rate differs from desired sampling_rate
+    let target_sr = sampling_rate as usize;
+    let input_sr = sample_rate as usize;
+    let buffer = if input_sr != target_sr {
+        eprintln!("Resampling from {} Hz to {} Hz", input_sr, target_sr);
+        resample_audio(&normalized_buffer, input_sr, target_sr)
+    } else {
+        normalized_buffer.clone()
+    };
     // Compute overlap in seconds and in frames for chunking
     let overlap_secs = (win_size as f32 - hop_size as f32) / sampling_rate as f32;
     let overlap_frames = (overlap_secs * sampling_rate as f32 / hop_size as f32).round() as usize;
     let mel_specs: Vec<Vec<Vec<f32>>> = if args.chunk_duration > 0.0 {
         let (chunks, _padding) = split(
-            &normalized_buffer,
+            &buffer,
             args.chunk_duration,
             overlap_secs,
             sampling_rate as u32,
@@ -127,10 +137,7 @@ fn main() {
             })
             .collect()
     } else {
-        vec![mel::mel_spectrogram_db(
-            mel_config.clone(),
-            normalized_buffer,
-        )]
+        vec![mel::mel_spectrogram_db(mel_config.clone(), buffer.clone())]
     };
 
     // Stitch the time frames back together
