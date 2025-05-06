@@ -290,13 +290,15 @@ pub fn plot_mel_spec(
     let smin = flat_vals.iter().cloned().fold(f32::INFINITY, f32::min);
     let smax = flat_vals.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
 
-    let mut image = ImageBuffer::new(time_steps as u32, mel_bands as u32);
+    // Precompute the colormap lookup table (256 entries)
+    let color_map = colors::precompute_colormap(&cmap);
 
+    let mut image = ImageBuffer::new(time_steps as u32, mel_bands as u32);
     for t in 0..time_steps {
         for m in 0..mel_bands {
             let norm = (mel_spec[t][m] - smin) / (smax - smin + f32::EPSILON);
-            let color = colors::grayscale_to_rgb(norm, &cmap);
-
+            let index = (norm * 255.0).round().clamp(0.0, 255.0) as usize;
+            let color = color_map[index];
             // Flip vertically so lowest freq is at bottom
             image.put_pixel(t as u32, (mel_bands - 1 - m) as u32, Rgb(color));
         }
