@@ -85,8 +85,17 @@ fn main() {
 
     let colormap = Colormap::from_name(&args.colormap).unwrap_or(Colormap::Magma);
     // read the input file to a vec of f32
+    let start = Instant::now();
     let mut wav: Wav<f32> = Wav::from_path(input_file.path().as_ref() as &std::path::Path).unwrap();
     // read the audio data into a Vec<f32>
+    // get audio metadata
+    let duration = wav.duration();
+    let sample_rate = wav.sample_rate();
+    println!("duration: {:?}", duration);
+    println!("sample rate: {:?}", sample_rate);
+    let num_samples = duration as f32 * sample_rate as f32;
+    println!("num samples: {:?}", num_samples);
+
     let max_val = wav.read().unwrap().iter().cloned().fold(0.0, f32::max);
     let normalized_buffer: Vec<f32> = wav
         .read()
@@ -99,7 +108,7 @@ fn main() {
     let overlap_secs = (win_size as f32 - hop_size as f32) / sampling_rate as f32;
     let overlap_frames = (overlap_secs * sampling_rate as f32 / hop_size as f32).round() as usize;
     let mel_specs: Vec<Vec<Vec<f32>>> = if args.chunk_duration > 0.0 {
-        let (chunks, padding) = split(
+        let (chunks, _padding) = split(
             &normalized_buffer,
             args.chunk_duration,
             overlap_secs,
@@ -152,4 +161,8 @@ fn main() {
     // Plot the full spectrogram
     let image = mel::plot_mel_spec(full_spec, colormap, width_px, height_px);
     image.save(output_path).unwrap();
+    println!("elapsed: {:?}", start.elapsed());
+    // realtime factor -- the audio duration divided by the elapsed time
+    let realtime_factor = num_samples as f32 / start.elapsed().as_secs_f32();
+    println!("realtime factor: {:?}x", realtime_factor);
 }

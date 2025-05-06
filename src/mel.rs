@@ -156,6 +156,8 @@ fn spectrogram(
     gpu_spectrogram(waveform, n_fft, win_length, hop_length, onesided)
 }
 
+// we might reimplement this in the future
+#[allow(dead_code)]
 fn fft(input: Vec<f32>, n_fft: usize) -> Vec<Complex<f32>> {
     let num_samples = input.len();
     assert!(n_fft.is_power_of_two(), "n_fft must be a power of 2");
@@ -193,7 +195,7 @@ fn fft(input: Vec<f32>, n_fft: usize) -> Vec<Complex<f32>> {
     }
     output
 }
-
+#[allow(dead_code)]
 fn hann_window(length: usize) -> Vec<f32> {
     (0..length)
         .map(|n| 0.5 * (1.0 - (2.0 * std::f32::consts::PI * n as f32 / (length - 1) as f32).cos()))

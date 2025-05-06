@@ -28,6 +28,8 @@ pub fn split(
     }
     (segments, padding)
 }
+
+#[allow(dead_code)]
 /// Merges overlapping segments back into a single audio vector, using overlap-add.
 pub fn merge(
     segments: &[Vec<f32>],
