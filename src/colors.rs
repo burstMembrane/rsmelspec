@@ -29,6 +29,21 @@ impl Colormap {
             Colormap::Oranges => colorgrad::preset::oranges(),
         }
     }
+    pub fn from_name(name: &str) -> Option<Colormap> {
+        match name {
+            "inferno" => Some(Colormap::Inferno),
+            "viridis" => Some(Colormap::Viridis),
+            "plasma" => Some(Colormap::Plasma),
+            "magma" => Some(Colormap::Magma),
+            "greys" => Some(Colormap::Greys),
+            "blues" => Some(Colormap::Blues),
+            "greens" => Some(Colormap::Greens),
+            "reds" => Some(Colormap::Reds),
+            "purples" => Some(Colormap::Purples),
+            "oranges" => Some(Colormap::Oranges),
+            _ => None,
+        }
+    }
 }
 
 /// Converts a normalized value (0.0 to 1.0) into an RGB color using the selected colormap.

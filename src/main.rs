@@ -1,7 +1,11 @@
+use crate::colors::Colormap;
+use audio::split;
 use clap::Parser;
 use clio::Input;
 use rayon::prelude::*;
-use wavers::{read, Wav};
+use std::time::Instant;
+use wavers::Wav;
+mod audio;
 mod colors;
 mod mel;
 #[derive(Parser)]
@@ -38,9 +42,19 @@ struct Cli {
 
     #[clap(short, long, default_value = "output.png")]
     output: String,
-
+    // width and height
+    #[clap(short, long, default_value = "0")]
+    width: u32,
+    #[clap(short, long, default_value = "0")]
+    height: u32,
     #[clap(long, default_value = "10.0")]
     chunk_duration: f32,
+
+    #[clap(long, default_value = "cpu")]
+    device: String,
+    // colormap
+    #[clap(long, default_value = "magma")]
+    colormap: String,
 }
 
 fn main() {
@@ -55,6 +69,7 @@ fn main() {
     let f_min = args.f_min;
     let f_max = args.f_max;
     let win_size = args.win_size;
+
     let spectrogram_config = mel::SpectrogramConfig::new(args.onesided);
     let mel_config = mel::MelConfig::new(
         sampling_rate as f32,
@@ -67,23 +82,74 @@ fn main() {
         top_db,
         spectrogram_config,
     );
+
+    let colormap = Colormap::from_name(&args.colormap).unwrap_or(Colormap::Magma);
     // read the input file to a vec of f32
     let mut wav: Wav<f32> = Wav::from_path(input_file.path().as_ref() as &std::path::Path).unwrap();
     // read the audio data into a Vec<f32>
-    let buffer: Vec<f32> = wav.read().unwrap().to_vec();
-
-    // Determine chunk size in samples
-    let chunk_samples = (args.chunk_duration * sampling_rate as f32) as usize;
-    // Split buffer into chunks
-    let chunks: Vec<&[f32]> = buffer.chunks(chunk_samples).collect();
-    // Parallel compute mel specs for each chunk
-    let mel_specs: Vec<Vec<Vec<f32>>> = chunks
-        .into_par_iter()
-        .map(|chunk| mel::mel_spectrogram_db(mel_config.clone(), chunk.to_vec()))
+    let max_val = wav.read().unwrap().iter().cloned().fold(0.0, f32::max);
+    let normalized_buffer: Vec<f32> = wav
+        .read()
+        .unwrap()
+        .iter()
+        .cloned()
+        .map(|x| x / max_val)
         .collect();
+    // Compute overlap in seconds and in frames for chunking
+    let overlap_secs = (win_size as f32 - hop_size as f32) / sampling_rate as f32;
+    let overlap_frames = (overlap_secs * sampling_rate as f32 / hop_size as f32).round() as usize;
+    let mel_specs: Vec<Vec<Vec<f32>>> = if args.chunk_duration > 0.0 {
+        let (chunks, padding) = split(
+            &normalized_buffer,
+            args.chunk_duration,
+            overlap_secs,
+            sampling_rate as u32,
+        );
+        // Overlap-aware chunk processing: drop overlap frames except for first chunk
+        chunks
+            .into_par_iter()
+            .enumerate()
+            .map(|(i, chunk)| {
+                let mut spec = mel::mel_spectrogram_db(mel_config.clone(), chunk.to_vec());
+                if i > 0 {
+                    spec.drain(0..overlap_frames.min(spec.len()));
+                }
+                spec
+            })
+            .collect()
+    } else {
+        vec![mel::mel_spectrogram_db(
+            mel_config.clone(),
+            normalized_buffer,
+        )]
+    };
+
     // Stitch the time frames back together
     let full_spec: Vec<Vec<f32>> = mel_specs.into_iter().flatten().collect();
+    // debug any zero values
+    for spec in full_spec.iter() {
+        for val in spec.iter() {
+            if *val == 0.0 {
+                println!("zero value: {:?}", val);
+            }
+        }
+    }
+
+    // Determine output resolution: if width or height is zero, use spec dimensions
+    let spec_frames = full_spec.len() as u32;
+    let spec_bins = full_spec.get(0).map(|row| row.len() as u32).unwrap_or(0);
+    let width_px = if args.width == 0 {
+        spec_frames
+    } else {
+        args.width
+    };
+    let height_px = if args.height == 0 {
+        spec_bins
+    } else {
+        args.height
+    };
+
     // Plot the full spectrogram
-    let image = mel::plot_mel_spec(full_spec, colors::Colormap::Magma, 1920, 256);
+    let image = mel::plot_mel_spec(full_spec, colormap, width_px, height_px);
     image.save(output_path).unwrap();
 }

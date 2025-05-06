@@ -2,9 +2,38 @@ use image::ImageBuffer;
 use image::Rgb;
 use num::complex::Complex;
 use rayon::prelude::*;
-use std::time::Instant;
+use std::default::Default;
 
 use crate::colors;
+use cubecl;
+use gpu_fft::fft::fft as gpu_fft_fft;
+
+type Runtime = cubecl::wgpu::WgpuRuntime;
+
+fn gpu_spectrogram(
+    waveform: Vec<f32>,
+    n_fft: usize,
+    _win_length: usize,
+    _hop_length: usize,
+    onesided: bool,
+) -> Vec<Vec<f32>> {
+    let device: <Runtime as cubecl::Runtime>::Device = Default::default();
+
+    let mut spec = Vec::new();
+    for chunk in waveform.chunks(n_fft) {
+        let mut frame = vec![0.0f32; n_fft];
+        frame[..chunk.len()].copy_from_slice(chunk);
+        let (real, imag) = gpu_fft_fft::<Runtime>(&device, frame);
+        let half = if onesided { n_fft / 2 + 1 } else { n_fft };
+        let mut mags = Vec::with_capacity(half);
+        for i in 0..half {
+            mags.push((real[i].powi(2) + imag[i].powi(2)).sqrt());
+        }
+        spec.push(mags);
+    }
+    spec
+}
+
 pub struct SpectrogramConfig {
     onesided: bool,
 }
@@ -78,16 +107,12 @@ impl MelConfig {
     }
 }
 pub fn mel_spectrogram_db(config: MelConfig, waveform: Vec<f32>) -> Vec<Vec<f32>> {
-    let start = Instant::now();
     let top_db = config.top_db;
     let mel_spec: Vec<Vec<f32>> = mel_spectrogram(config, waveform);
-    let result: Vec<Vec<f32>> = amplitude_to_db(mel_spec, top_db);
-    println!("mel_spectrogram_db elapsed: {:?}", start.elapsed());
-    result
+    amplitude_to_db(mel_spec, top_db)
 }
 
 fn mel_spectrogram(config: MelConfig, waveform: Vec<f32>) -> Vec<Vec<f32>> {
-    let start = Instant::now();
     let spectrogram = spectrogram(
         waveform,
         config.n_fft,
@@ -104,7 +129,7 @@ fn mel_spectrogram(config: MelConfig, waveform: Vec<f32>) -> Vec<Vec<f32>> {
         config.sample_rate,
     );
 
-    let mel_spec: Vec<Vec<f32>> = spectrogram
+    spectrogram
         .into_par_iter()
         .map(|spec_row| {
             (0..config.n_mels)
@@ -117,10 +142,7 @@ fn mel_spectrogram(config: MelConfig, waveform: Vec<f32>) -> Vec<Vec<f32>> {
                 })
                 .collect()
         })
-        .collect();
-
-    println!("mel_spectrogram time: {:?}", start.elapsed());
-    mel_spec
+        .collect()
 }
 
 fn spectrogram(
@@ -130,55 +152,8 @@ fn spectrogram(
     hop_length: usize,
     onesided: bool,
 ) -> Vec<Vec<f32>> {
-    let start = Instant::now();
-    println!("n_fft: {}", n_fft);
-    println!("win_length: {}", win_length);
-    println!("hop_length: {}", hop_length);
-    assert!(n_fft >= win_length);
-    assert!(win_length >= hop_length);
-
-    let pad_size = (win_length - hop_length) / 2;
-
-    let padded_waveform: Vec<f32> = vec![0.0; pad_size]
-        .into_iter()
-        .chain(waveform)
-        .chain(vec![0.0; pad_size])
-        .collect();
-
-    let window_fn = hann_window(win_length);
-    let indices: Vec<usize> = (0..padded_waveform.len() - win_length - pad_size)
-        .step_by(hop_length)
-        .collect();
-
-    let full_spec: Vec<Vec<f32>> = indices
-        .into_par_iter()
-        .map(|i| {
-            // window + FFT + magnitude
-            let mut windowed_input = Vec::with_capacity(win_length);
-            for (a, w) in padded_waveform[i..i + win_length]
-                .iter()
-                .zip(window_fn.iter())
-            {
-                windowed_input.push(a * w);
-            }
-            fft(windowed_input, n_fft)
-                .into_iter()
-                .map(|c| c.norm())
-                .collect()
-        })
-        .collect();
-
-    if onesided {
-        let result = full_spec
-            .iter()
-            .map(|row| row.iter().take(n_fft / 2 + 1).cloned().collect())
-            .collect();
-        println!("spectrogram time: {:?}", start.elapsed());
-        result
-    } else {
-        println!("spectrogram time: {:?}", start.elapsed());
-        full_spec
-    }
+    // GPU-accelerated FFT
+    gpu_spectrogram(waveform, n_fft, win_length, hop_length, onesided)
 }
 
 fn fft(input: Vec<f32>, n_fft: usize) -> Vec<Complex<f32>> {
@@ -318,15 +293,11 @@ fn mel_to_hz(mel: f32) -> f32 {
 pub fn plot_mel_spec(
     mel_spec: Vec<Vec<f32>>,
     cmap: colors::Colormap,
-    width: usize,
-    height: usize,
+    width_px: u32,
+    height_px: u32,
 ) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
-    let start = Instant::now();
-    let time_steps = mel_spec.len(); // X-axis
-    let mel_bands = mel_spec[0].len(); // Y-axis
-
-    println!("width: {}", time_steps);
-    println!("height: {}", mel_bands);
+    let time_steps = mel_spec.len();
+    let mel_bands = mel_spec[0].len();
 
     let flat_vals: Vec<f32> = mel_spec
         .iter()
@@ -335,41 +306,34 @@ pub fn plot_mel_spec(
     let smin = flat_vals.iter().cloned().fold(f32::INFINITY, f32::min);
     let smax = flat_vals.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
 
-    // Precompute the colormap lookup table (256 entries)
     let color_map = colors::precompute_colormap(&cmap);
 
-    let mut image = ImageBuffer::new(time_steps as u32, mel_bands as u32);
-    for t in 0..time_steps {
-        for m in 0..mel_bands {
-            let norm = (mel_spec[t][m] - smin) / (smax - smin + f32::EPSILON);
-            let index = (norm * 255.0).round().clamp(0.0, 255.0) as usize;
-            let color = color_map[index];
-            // Flip vertically so lowest freq is at bottom
-            image.put_pixel(t as u32, (mel_bands - 1 - m) as u32, Rgb(color));
+    let mut image = ImageBuffer::new(width_px, height_px);
+    for px in 0..width_px {
+        let frame_idx = (px as usize * time_steps) / (width_px as usize);
+        if frame_idx >= time_steps {
+            eprintln!("Frame index {} out of bounds", frame_idx);
+            continue;
+        }
+
+        for py in 0..height_px {
+            let mel_idx = ((height_px - 1 - py) as usize * mel_bands) / (height_px as usize);
+            let val = mel_spec[frame_idx][mel_idx];
+
+            let norm = (val - smin) / (smax - smin + f32::EPSILON);
+            let idx = (norm * 255.0).round().clamp(0.0, 255.0) as usize;
+            let color = color_map[idx];
+            image.put_pixel(px, py, Rgb(color));
         }
     }
-    println!("original width: {}", image.width());
-    println!("original height: {}", image.height());
-    // resize the image to the given width and height
-    image = image::imageops::resize(
-        &image,
-        width as u32,
-        height as u32,
-        image::imageops::FilterType::CatmullRom,
-    );
 
-    println!("resized width: {}", image.width());
-    println!("resized height: {}", image.height());
-
-    println!("plot_mel_spec elapsed: {:?}", start.elapsed());
+    println!("image width: {}", image.width());
+    println!("image height: {}", image.height());
     image
 }
 
 fn amplitude_to_db(amplitudes: Vec<Vec<f32>>, top_db: f32) -> Vec<Vec<f32>> {
     use rayon::prelude::*;
-    use std::time::Instant;
-    let start = Instant::now();
-    // Stage 1: power -> dB conversion (parallel)
     let dbs: Vec<Vec<f32>> = amplitudes
         .into_par_iter()
         .map(|row| {
@@ -379,27 +343,23 @@ fn amplitude_to_db(amplitudes: Vec<Vec<f32>>, top_db: f32) -> Vec<Vec<f32>> {
         })
         .collect();
 
-    // Compute global max (serial, since flattening and max is fast)
     let max_db = dbs
         .iter()
         .flat_map(|row| row.iter())
         .cloned()
         .fold(f32::NEG_INFINITY, f32::max);
 
-    // Stage 2: apply top_db clipping (parallel)
     let clipped: Vec<Vec<f32>> = dbs
         .into_par_iter()
         .map(|row| row.into_iter().map(|db| db.max(max_db - top_db)).collect())
         .collect();
 
-    println!("amplitude_to_db elapsed: {:?}", start.elapsed());
     clipped
 }
 
 fn _assert_complex_eq(left: Complex<f32>, right: Complex<f32>) {
     // tolerance for floating-point comparison
     const EPSILON: f32 = 1e-5;
-
     assert!(
         (left.re - right.re).abs() < EPSILON,
         "left: {:?}, right: {:?}",
